@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+"""UI tab for comparing graph metrics and experiment trajectories."""
+
 import numpy as np
 import pandas as pd
 import streamlit as st
 
 import plotly.express as px
-
-from src.config import settings
 from src.metrics import calculate_metrics
 from src.preprocess import filter_edges
 from src.graph_build import build_graph_from_edges, lcc_subgraph
@@ -20,8 +20,16 @@ from src.ui.plots.charts import (
 from src.plotting import fig_compare_attacks
 
 
-def render(G_view, active_entry: GraphEntry, src_col: str, dst_col: str, min_conf: float, min_weight: float, analysis_mode: str) -> None:
-    """Render the compare tab."""
+def render(
+    G_view,
+    active_entry: GraphEntry,
+    src_col: str,
+    dst_col: str,
+    min_conf: float,
+    min_weight: float,
+    analysis_mode: str,
+) -> None:
+    """Render the compare tab for scalar and trajectory comparisons."""
     if G_view is None:
         return
 
@@ -61,6 +69,7 @@ def render(G_view, active_entry: GraphEntry, src_col: str, dst_col: str, min_con
                 if analysis_mode.startswith("LCC"):
                     _G = lcc_subgraph(_G)
 
+                # Compute scalar metrics for each graph under current filters.
                 _m = calculate_metrics(_G, eff_sources_k=16, seed=42)
                 rows.append({"Name": entry.name, scalar_metric: _m.get(scalar_metric, np.nan)})
 
@@ -124,22 +133,3 @@ def render(G_view, active_entry: GraphEntry, src_col: str, dst_col: str, min_con
                     st.dataframe(pd.DataFrame(auc_rows).sort_values("AUC", ascending=False), use_container_width=True)
             else:
                 st.info("Выбери эксперименты.")
-
-
-TABS_MAP = {
-    tab_labels[0]: tab_dashboard,
-    tab_labels[1]: tab_energy,
-    tab_labels[2]: tab_structure,
-    tab_labels[3]: tab_null_models,
-    tab_labels[4]: tab_attack_lab,
-    tab_labels[5]: tab_compare,
-}
-
-if selected_main_tab in TABS_MAP:
-    TABS_MAP[selected_main_tab]()
-
-# ============================================================
-# 11) FOOTER
-# ============================================================
-st.markdown("---")
-st.caption("Kodik Lab | Streamlit + NetworkX | node/edge attacks + weak percolation")
