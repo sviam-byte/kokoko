@@ -137,23 +137,26 @@ def render(G_view: nx.Graph | None, active_entry: GraphEntry, seed_val: int, src
             )
 
             # Rendering.
-            fig_flow = make_energy_flow_figure_3d(
-                G_view,
-                pos3d_local,
-                steps=int(flow_steps),
-                node_frames=node_frames,
-                edge_frames=edge_frames,
-                # Передаем параметры визуализации.
-                node_size=int(node_size_energy),
-                vis_contrast=float(vis_contrast),
-                vis_clip=float(vis_clip),
-                # Скорость анимации.
-                anim_duration=int(anim_duration),
-                # Фильтрация.
-                max_edges_viz=int(max_edges_viz),
-                edge_subset_mode=str(edge_subset_mode),
-                # Цвета.
-                vis_log=True,
-            )
+            try:
+                fig_flow = make_energy_flow_figure_3d(
+                    G_view,
+                    pos3d_local,
+                    steps=int(flow_steps),
+                    node_frames=node_frames,
+                    edge_frames=edge_frames,
+                    # Передаем параметры визуализации (часть из них игнорируется внутри plotter).
+                    node_size=int(node_size_energy),
+                    vis_contrast=float(vis_contrast),
+                    vis_clip=float(vis_clip),
+                    anim_duration=int(anim_duration),
+                    max_edges_viz=int(max_edges_viz),
+                    edge_subset_mode=str(edge_subset_mode),
+                    vis_log=True,
+                )
+            except Exception as e:
+                # Streamlit Cloud иногда редактирует текст ошибки. Покажем тип/сообщение явно.
+                st.error(f"Energy 3D render failed: {type(e).__name__}: {e}")
+                st.exception(e)
+                return
 
         st.plotly_chart(fig_flow, use_container_width=True, key="plot_energy_flow")
