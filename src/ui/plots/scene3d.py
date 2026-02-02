@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import networkx as nx
@@ -29,7 +29,13 @@ def make_energy_flow_figure_3d(
     hotspot_size_mult: float = 4.0,
     base_node_opacity: float = 0.25,
     rw_impulse: bool = True,
+    **_ignored: object,
 ) -> go.Figure:
+    """Render an animated 3D energy flow figure.
+
+    Extra keyword arguments are accepted via ``_ignored`` for compatibility with
+    callers that pass through plotting options.
+    """
     if node_frames is None or edge_frames is None:
         node_frames, edge_frames = simulate_energy_flow(
             G,
@@ -81,27 +87,54 @@ def make_energy_flow_figure_3d(
     xs, ys, zs = coords[:, 0], coords[:, 1], coords[:, 2]
 
     base_node_sizes = np.full(len(nodes), 6.0, dtype=float)
-    
-    def _node_trace(frame_idx: int) -> go.Scatter3d:
+
+    def _node_traces(frame_idx: int) -> List[go.Scatter3d]:
+        """Build separate traces for hot/cold nodes to control opacity."""
         fr = node_frames[frame_idx]
         energies = np.array([float(fr.get(n, 0.0)) for n in nodes], dtype=float)
         q = float(np.quantile(energies, float(hotspot_q))) if energies.size else 0.0
         is_hot = energies >= q
-        sizes = base_node_sizes.copy()
-        sizes[is_hot] *= float(hotspot_size_mult)
-        opac = np.full(len(nodes), float(base_node_opacity), dtype=float)
-        opac[is_hot] = 1.0
         c = energies / float(Emax)
-        return go.Scatter3d(
-            x=xs,
-            y=ys,
-            z=zs,
-            mode="markers",
-            marker=dict(size=sizes, color=c, colorscale="Viridis", opacity=opac),
-            text=[str(n) for n in nodes],
-            hoverinfo="text",
-            name="nodes",
-        )
+        cold_idx = np.where(~is_hot)[0]
+        hot_idx = np.where(is_hot)[0]
+        traces: List[go.Scatter3d] = []
+        if cold_idx.size:
+            traces.append(
+                go.Scatter3d(
+                    x=xs[cold_idx],
+                    y=ys[cold_idx],
+                    z=zs[cold_idx],
+                    mode="markers",
+                    marker=dict(
+                        size=base_node_sizes[cold_idx],
+                        color=c[cold_idx],
+                        colorscale="Viridis",
+                        opacity=float(base_node_opacity),
+                    ),
+                    text=[str(nodes[i]) for i in cold_idx],
+                    hoverinfo="text",
+                    name="nodes",
+                )
+            )
+        if hot_idx.size:
+            traces.append(
+                go.Scatter3d(
+                    x=xs[hot_idx],
+                    y=ys[hot_idx],
+                    z=zs[hot_idx],
+                    mode="markers",
+                    marker=dict(
+                        size=base_node_sizes[hot_idx] * float(hotspot_size_mult),
+                        color=c[hot_idx],
+                        colorscale="Viridis",
+                        opacity=1.0,
+                    ),
+                    text=[str(nodes[i]) for i in hot_idx],
+                    hoverinfo="text",
+                    name="nodes_hot",
+                )
+            )
+        return traces
 
     def _edges_traces(frame_idx: int) -> List[go.Scatter3d]:
         fr = edge_frames[frame_idx]
@@ -141,11 +174,11 @@ def make_energy_flow_figure_3d(
             )
         return traces
 
-    data0 = [*_edges_traces(0), _node_trace(0)]
+    data0 = [*_edges_traces(0), *_node_traces(0)]
 
     frames = []
     for t in range(steps + 1):
-        fr_traces = [*_edges_traces(t), _node_trace(t)]
+        fr_traces = [*_edges_traces(t), *_node_traces(t)]
         frames.append(go.Frame(data=fr_traces, name=str(t)))
 
     fig = go.Figure(data=data0, frames=frames)
@@ -197,8 +230,10 @@ def make_energy_flow_figure_3d(
 def make_3d_traces(
     G: nx.Graph,
     pos3d: Dict,
-    edge_mode: str = "weight",
-    edge_quantiles: int = 7,
+    *,
+    show_scale: bool = False,
+    edge_overlay: str = "weight",
+    flow_mode: str = "rw",
     show_nodes: bool = True,
     show_labels: bool = False,
     node_size: int = 6,
@@ -206,41 +241,46 @@ def make_3d_traces(
     edge_opacity: float = 0.55,
     edge_width_min: float = 1.0,
     edge_width_max: float = 6.0,
-    node_color_mode: str = "degree",
-    overlay_mode: str = "none",
-    overlay_kappa_q: float = 0.15,
-    overlay_energy_steps: int = 20,
-    overlay_flow_mode: str = "rw",
-    overlay_damping: float = 1.0,
-) -> List[go.BaseTraceType]:
+    edge_quantiles: int = 7,
+) -> tuple[list[go.Scatter3d], go.Scatter3d | None]:
+    """Build edge traces + a node trace for a 3D graph visualization.
+
+    The function returns edge traces separately so callers can adjust node styling
+    (size/labels) without rebuilding the edges. Set ``show_scale`` to include a
+    colorbar for the selected ``edge_overlay`` metric.
+    """
     nodes = list(G.nodes())
     if not nodes:
-        return []
+        return [], None
 
     xs = [pos3d.get(n, (0.0, 0.0, 0.0))[0] for n in nodes]
     ys = [pos3d.get(n, (0.0, 0.0, 0.0))[1] for n in nodes]
     zs = [pos3d.get(n, (0.0, 0.0, 0.0))[2] for n in nodes]
 
-    if node_color_mode == "strength":
-        cvals = np.array([G.degree(n, weight="weight") for n in nodes], dtype=float)
-    else:
-        cvals = np.array([G.degree(n) for n in nodes], dtype=float)
+    # Color nodes by (unweighted) degree to keep scale stable across datasets.
+    cvals = np.array([G.degree(n) for n in nodes], dtype=float)
 
-    traces: List[go.BaseTraceType] = []
+    edge_traces: list[go.Scatter3d] = []
 
     edges = []
     vals = []
+    edge_overlay = str(edge_overlay).lower()
+    edge_flux: Dict[Tuple, float] | None = None
+    if edge_overlay == "flux":
+        # Precompute energy flow once to avoid per-edge work.
+        _, edge_flux = compute_energy_flow(G, steps=20, flow_mode=str(flow_mode), damping=1.0)
     for u, v, d in G.edges(data=True):
         if u not in pos3d or v not in pos3d:
             continue
         edges.append((u, v))
-        if edge_mode == "confidence":
+        if edge_overlay == "confidence":
             vals.append(float(d.get("confidence", 0.0)))
-        elif edge_mode == "ricci":
+        elif edge_overlay == "ricci":
             vals.append(float(ollivier_ricci_edge(G, u, v)))
-        elif edge_mode == "energy":
-            _, edge_flux = compute_energy_flow(G, steps=int(overlay_energy_steps), flow_mode=str(overlay_flow_mode), damping=float(overlay_damping))
+        elif edge_overlay == "flux" and edge_flux is not None:
             vals.append(float(edge_flux.get((u, v), edge_flux.get((v, u), 0.0))))
+        elif edge_overlay == "none":
+            vals.append(0.0)
         else:
             vals.append(float(d.get("weight", 0.0)))
 
@@ -279,7 +319,7 @@ def make_3d_traces(
             ey.extend([y0, y1, None])
             ez.extend([z0, z1, None])
         width = float(edge_width_min + (edge_width_max - edge_width_min) * (bi / max(1, len(buckets) - 1)))
-        traces.append(
+        edge_traces.append(
             go.Scatter3d(
                 x=ex,
                 y=ey,
@@ -292,106 +332,46 @@ def make_3d_traces(
             )
         )
 
-    if overlay_mode and overlay_mode != "none":
-        traces.extend(_build_edge_overlay_traces(G, pos3d, overlay_mode, overlay_kappa_q, overlay_energy_steps, overlay_flow_mode, overlay_damping))
-
-    if show_nodes:
-        traces.append(
+    if show_scale:
+        vmin = float(bins.min())
+        vmax = float(bins.max())
+        edge_traces.append(
             go.Scatter3d(
-                x=xs,
-                y=ys,
-                z=zs,
-                mode="markers+text" if show_labels else "markers",
+                x=[None],
+                y=[None],
+                z=[None],
+                mode="markers",
                 marker=dict(
-                    size=int(node_size),
-                    color=cvals,
-                    colorscale="Viridis",
-                    opacity=float(node_opacity),
+                    size=0.1,
+                    color=[vmin, vmax],
+                    colorscale="Plasma",
+                    cmin=vmin,
+                    cmax=vmax,
+                    showscale=True,
+                    colorbar=dict(title=edge_overlay),
                 ),
-                text=[str(n) for n in nodes] if show_labels else None,
-                hoverinfo="text",
-                name="nodes",
+                hoverinfo="none",
+                name="edge_scale",
+                showlegend=False,
             )
         )
 
-    return traces
-
-
-def _build_edge_overlay_traces(
-    G: nx.Graph,
-    pos3d: Dict,
-    overlay_mode: str,
-    overlay_kappa_q: float,
-    overlay_energy_steps: int,
-    overlay_flow_mode: str,
-    overlay_damping: float,
-) -> List[go.BaseTraceType]:
-    if overlay_mode not in ("hot", "cold", "energy"):
-        return []
-
-    overlay_edges: Set[Tuple] = set()
-
-    if overlay_mode == "energy":
-        _, edge_flux = compute_energy_flow(
-            G,
-            steps=int(overlay_energy_steps),
-            flow_mode=str(overlay_flow_mode),
-            damping=float(overlay_damping),
+    node_trace: go.Scatter3d | None = None
+    if show_nodes:
+        node_trace = go.Scatter3d(
+            x=xs,
+            y=ys,
+            z=zs,
+            mode="markers+text" if show_labels else "markers",
+            marker=dict(
+                size=int(node_size),
+                color=cvals,
+                colorscale="Viridis",
+                opacity=float(node_opacity),
+            ),
+            text=[str(n) for n in nodes] if show_labels else None,
+            hoverinfo="text",
+            name="nodes",
         )
-        vals = np.array(list(edge_flux.values()), dtype=float)
-        vals = vals[np.isfinite(vals)]
-        if vals.size == 0:
-            return []
-        thr = float(np.quantile(vals, 0.85))
-        for (u, v), f in edge_flux.items():
-            if float(f) >= thr:
-                overlay_edges.add((u, v))
-    else:
-        kappas = []
-        e_k = []
-        for u, v in G.edges():
-            k = float(ollivier_ricci_edge(G, u, v))
-            if np.isfinite(k):
-                kappas.append(k)
-                e_k.append((u, v, k))
-        if not kappas:
-            return []
-        kappas = np.array(kappas, dtype=float)
-        q = float(overlay_kappa_q)
-        if overlay_mode == "hot":
-            thr = float(np.quantile(kappas, 1.0 - q))
-            for u, v, k in e_k:
-                if k >= thr:
-                    overlay_edges.add((u, v))
-        else:
-            thr = float(np.quantile(kappas, q))
-            for u, v, k in e_k:
-                if k <= thr:
-                    overlay_edges.add((u, v))
 
-    if not overlay_edges:
-        return []
-
-    ex = []
-    ey = []
-    ez = []
-    for u, v in overlay_edges:
-        if u not in pos3d or v not in pos3d:
-            continue
-        x0, y0, z0 = pos3d[u]
-        x1, y1, z1 = pos3d[v]
-        ex.extend([x0, x1, None])
-        ey.extend([y0, y1, None])
-        ez.extend([z0, z1, None])
-
-    return [
-        go.Scatter3d(
-            x=ex,
-            y=ey,
-            z=ez,
-            mode="lines",
-            line=dict(color="rgba(255,255,255,0.9)", width=8),
-            hoverinfo="none",
-            name="overlay",
-        )
-    ]
+    return edge_traces, node_trace
