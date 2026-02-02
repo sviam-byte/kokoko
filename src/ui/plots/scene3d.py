@@ -83,8 +83,13 @@ def make_energy_flow_figure_3d(
         np.linspace(0.2, 1.0, max(2, bin_edges.size - 1)),
     )
 
-    coords = np.array([pos3d.get(n, (0, 0, 0)) for n in nodes], dtype=float)
-    xs, ys, zs = coords[:, 0], coords[:, 1], coords[:, 2]
+    # Plotly иногда спотыкается об numpy-типы при JSON-сериализации
+    # (особенно внутри frames). Поэтому приводим всё к простым python
+    # спискам заранее.
+    coords = np.array([pos3d.get(n, (0.0, 0.0, 0.0)) for n in nodes], dtype=float)
+    xs = coords[:, 0].astype(float).tolist()
+    ys = coords[:, 1].astype(float).tolist()
+    zs = coords[:, 2].astype(float).tolist()
 
     base_node_sizes = np.full(len(nodes), 6.0, dtype=float)
 
@@ -101,13 +106,13 @@ def make_energy_flow_figure_3d(
         if cold_idx.size:
             traces.append(
                 go.Scatter3d(
-                    x=xs[cold_idx],
-                    y=ys[cold_idx],
-                    z=zs[cold_idx],
+                    x=[xs[i] for i in cold_idx.tolist()],
+                    y=[ys[i] for i in cold_idx.tolist()],
+                    z=[zs[i] for i in cold_idx.tolist()],
                     mode="markers",
                     marker=dict(
-                        size=base_node_sizes[cold_idx],
-                        color=c[cold_idx],
+                        size=base_node_sizes[cold_idx].astype(float).tolist(),
+                        color=c[cold_idx].astype(float).tolist(),
                         colorscale="Viridis",
                         opacity=float(base_node_opacity),
                     ),
@@ -119,13 +124,13 @@ def make_energy_flow_figure_3d(
         if hot_idx.size:
             traces.append(
                 go.Scatter3d(
-                    x=xs[hot_idx],
-                    y=ys[hot_idx],
-                    z=zs[hot_idx],
+                    x=[xs[i] for i in hot_idx.tolist()],
+                    y=[ys[i] for i in hot_idx.tolist()],
+                    z=[zs[i] for i in hot_idx.tolist()],
                     mode="markers",
                     marker=dict(
-                        size=base_node_sizes[hot_idx] * float(hotspot_size_mult),
-                        color=c[hot_idx],
+                        size=(base_node_sizes[hot_idx] * float(hotspot_size_mult)).astype(float).tolist(),
+                        color=c[hot_idx].astype(float).tolist(),
                         colorscale="Viridis",
                         opacity=1.0,
                     ),
@@ -148,7 +153,7 @@ def make_energy_flow_figure_3d(
             x1, y1, z1 = pos3d[v]
             b = int(np.searchsorted(bin_edges, float(val), side="right") - 1)
             b = max(0, min(b, len(buckets) - 1))
-            buckets[b].append((x0, y0, z0, x1, y1, z1))
+            buckets[b].append((float(x0), float(y0), float(z0), float(x1), float(y1), float(z1)))
 
         traces = []
         for i, segs in enumerate(buckets):
@@ -182,6 +187,9 @@ def make_energy_flow_figure_3d(
         frames.append(go.Frame(data=fr_traces, name=str(t)))
 
     fig = go.Figure(data=data0, frames=frames)
+    # Скорость анимации (мс/кадр) можно передать через kwargs (например, anim_duration=...).
+    anim_duration = int(_ignored.get("anim_duration", 80) or 80)
+
     fig.update_layout(
         scene=dict(
             xaxis=dict(visible=False),
@@ -200,7 +208,7 @@ def make_energy_flow_figure_3d(
                         args=[
                             None,
                             dict(
-                                frame=dict(duration=80, redraw=True),
+                                frame=dict(duration=anim_duration, redraw=True),
                                 fromcurrent=True,
                                 transition=dict(duration=0),
                             ),
